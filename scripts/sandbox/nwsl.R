@@ -1,6 +1,6 @@
 
 current_year <- 2026
-current_gameweek <- 5
+current_gameweek <- 8
 
 fit_marcel_projection_1 <- function(data, ...) {
   fit <- data |>
@@ -63,6 +63,9 @@ schedule <- jsonlite::fromJSON("https://app.americansocceranalysis.com/api/v1/nw
       date_time_pt < "2026-04-01" ~ 4,
       date_time_pt < "2026-04-15" ~ 5,
       date_time_pt < "2026-04-28" ~ 6,
+      date_time_pt < "2026-05-05" ~ 7,
+      date_time_pt < "2026-05-14" ~ 8,
+      date_time_pt < "2026-05-19" ~ 9,
     )
   )
 
@@ -573,11 +576,11 @@ fit_minutes_60_rest <- glm(
 
 proj_minutes <- data_minutes |>
   dplyr::mutate(
-    minutes_ratio_1 = minutes_ratio,
-    minutes_ratio_2 = minutes_ratio_1,
-    minutes_ratio_3 = minutes_ratio_2,
+    minutes_ratio_5 = minutes_ratio_4,
     minutes_ratio_4 = minutes_ratio_3,
-    minutes_ratio_5 = minutes_ratio_4
+    minutes_ratio_3 = minutes_ratio_2,
+    minutes_ratio_2 = minutes_ratio_1,
+    minutes_ratio_1 = minutes_ratio
   )
 
 proj_minutes <- proj_minutes |>
@@ -638,7 +641,6 @@ fantasy_points <- projection_wide |>
     ),
     points_per_goal23 = ifelse(position %in% c("Goalkeeper", "Defender"), -1, 0),
     points_per_goal456 = ifelse(position %in% c("Goalkeeper", "Defender"), -2, 0),
-    points_per_visionary = 3,
     xgoals_per_game_rest = pred_minutes_rest * xgoals_per_minute,
     xassists_per_game_rest = pred_minutes_rest * xassists_per_minute,
     # Exclude visionary points from rest-of-season projection. Visionary status too unpredictable.
@@ -671,7 +673,7 @@ upcoming_gameweek <- pred_xgoals |>
 
 daily_projection <- fantasy_points |>
   dplyr::select(-coef_def) |>
-  dplyr::inner_join(upcoming_gameweek, by = c("year", "team_id" = "off_id")) |>
+  dplyr::inner_join(upcoming_gameweek, by = c("year", "team_id" = "off_id"), relationship = "many-to-many") |>
   dplyr::left_join(coef_def, by = c("year", "def_id")) |>
   dplyr::left_join(pred_xgoals, by = c("year", "game_id", "def_id" = "off_id")) |>
   dplyr::left_join(team_game_goal_prob, by = c("game_id", "def_id" = "team_id")) |>
@@ -684,20 +686,22 @@ daily_projection <- fantasy_points |>
     fantasy_per_game = 1 * prob_1_minute_next + 1 * prob_60_minutes_next +
       points_per_xgoal * xgoals_per_game_next + points_per_xassist * xassists_per_game_next +
       points_per_goal0 * goal0s_per_game * prob_60_minutes_next +
-      points_per_goal23 * goal23s_per_game + points_per_goal456 * goal456s_per_game +
-      dplyr::coalesce(is_visionary, 0) * points_per_visionary * (
-        (points_per_xgoal > 0) * (1 - ppois(lambda = xgoals_per_game_next, q = 0)) +
-        (points_per_xassist > 0) * (1 - ppois(lambda = xassists_per_game_next, q = 0)) +
-        (points_per_goal0 > 0) * goal0s_per_game * prob_60_minutes_next
-      )
+      points_per_goal23 * goal23s_per_game + points_per_goal456 * goal456s_per_game,
+    prob_points = (points_per_xgoal > 0) * (1 - ppois(lambda = xgoals_per_game_next, q = 0)) +
+      (points_per_xassist > 0) * (1 - ppois(lambda = xassists_per_game_next, q = 0)) +
+      (points_per_goal0 > 0) * goal0s_per_game * prob_60_minutes_next
   ) |>
   dplyr::left_join(player, by = "player_id") |>
   dplyr::left_join(team, by = c("def_id" = "team_id")) |>
   dplyr::left_join(team, by = "team_id", suffix = c("_def", "_off")) |>
-  dplyr::select(
-    player_name, position, price, team = team_abbreviation_off, opp = team_abbreviation_def, minutes = pred_minutes_next, fantasy = fantasy_per_game,
-    vision = is_visionary, xgoals = xgoals_per_game_next, xassists = xassists_per_game_next, shutout = goal0s_per_game,
-    dplyr::everything()
+  dplyr::group_by(
+    player_name, position, price, team = team_abbreviation_off, my_team, vision = is_visionary
+  ) |>
+  dplyr::summarize(
+    opp = paste(team_abbreviation_def, collapse = "/"),
+    minutes = sum(pred_minutes_next),
+    fantasy = sum(fantasy_per_game) + (1 - prod(1 - prob_points)) * dplyr::coalesce(mean(is_visionary), 0) * 3,
+    .groups = "drop"
   ) |>
   dplyr::arrange(-fantasy)
 
@@ -708,19 +712,13 @@ ranking |>
   dplyr::arrange(position)
 
 ranking |>
+  dplyr::filter(position == "Defender")
+
+daily_projection |>
+  dplyr::filter(my_team)
+
+daily_projection |>
   dplyr::filter(is.na(my_team))
-
-daily_projection |>
-  dplyr::filter(my_team) |>
-  dplyr::arrange(position)
-
-daily_projection |>
-  dplyr::filter(is.na(my_team)) |>
-  print(n = 30)
-
-ranking |>
-  dplyr::filter(is.na(my_team)) |>
-  dplyr::filter(position == "Midfielder")
 
 
 schedule_long |>
