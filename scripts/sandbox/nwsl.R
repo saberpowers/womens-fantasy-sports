@@ -1,6 +1,6 @@
 
 current_year <- 2026
-current_gameweek <- 8
+current_gameweek <- 10
 
 fit_marcel_projection_1 <- function(data, ...) {
   fit <- data |>
@@ -66,6 +66,8 @@ schedule <- jsonlite::fromJSON("https://app.americansocceranalysis.com/api/v1/nw
       date_time_pt < "2026-05-05" ~ 7,
       date_time_pt < "2026-05-14" ~ 8,
       date_time_pt < "2026-05-19" ~ 9,
+      date_time_pt < "2026-05-27" ~ 10,
+      date_time_pt < "2026-06-16" ~ 11,
     )
   )
 
@@ -653,6 +655,9 @@ fantasy_points <- projection_wide |>
 ranking <- fantasy_points |>
   dplyr::left_join(player, by = "player_id") |>
   dplyr::filter(year == current_year) |>
+  dplyr::mutate(
+    player_name = ifelse(!is.na(my_team), toupper(player_name), player_name)
+  ) |>
   dplyr::select(
     player_name,
     position,
@@ -703,13 +708,16 @@ daily_projection <- fantasy_points |>
     fantasy = sum(fantasy_per_game) + (1 - prod(1 - prob_points)) * dplyr::coalesce(mean(is_visionary), 0) * 3,
     .groups = "drop"
   ) |>
+  dplyr::mutate(
+    player_name = ifelse(!is.na(my_team), toupper(player_name), player_name)
+  ) |>
   dplyr::arrange(-fantasy)
 
 # ----
 
-ranking |>
+my_roster <- ranking |>
   dplyr::filter(my_team) |>
-  dplyr::arrange(position)
+  dplyr::arrange(factor(position, levels = c("Goalkeeper", "Defender", "Midfielder", "Forward")))
 
 ranking |>
   dplyr::filter(position == "Defender")
@@ -735,3 +743,61 @@ team |>
   dplyr::arrange(-coef) |>
   dplyr::select(year, team_short_name, coef_off, coef_def, coef) |>
   dplyr::filter(year == current_year)
+
+
+
+# Determine best roster ----
+
+best_roster <- tibble::tibble(
+  position = c(rep("Goalkeeper", 2), rep("Defender", 5), rep("Midfielder", 5), rep("Forward", 3))
+) |>
+  dplyr::group_by(position) |>
+  dplyr::mutate(
+    player_name = paste(position, 1:dplyr::n()),
+    .before = 1
+  ) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(price = 0, fantasy = 0)
+
+last_off <- NULL
+
+while (TRUE) {
+
+  transfer <- best_roster |>
+    dplyr::mutate(payroll = sum(price)) |>
+    dplyr::inner_join(
+      y = ranking |>
+        dplyr::anti_join(best_roster, by = c("player_name", "position")),
+      by = "position",
+      suffix = c("", "_sub"),
+      relationship = "many-to-many"
+    ) |>
+    dplyr::filter(fantasy_sub > fantasy, payroll + price_sub - price <= 100) |>
+    dplyr::arrange(-(fantasy_sub - fantasy) / (price_sub - price)) |>
+    dplyr::select(
+      position, player_name, price, fantasy, player_name_sub, price_sub, fantasy_sub
+    ) |>
+    dplyr::slice(1)
+  
+  if (nrow(transfer) == 0) {
+    break
+  }
+  
+  last_transfer <- transfer
+  points_per_dollar <- with(last_transfer, (fantasy_sub - fantasy) / (price_sub - price)) |>
+    as.numeric()
+  
+  best_roster <- best_roster |>
+    dplyr::left_join(transfer, by = c("position", "player_name", "price", "fantasy")) |>
+    dplyr::mutate(
+      player_name = dplyr::coalesce(player_name_sub, player_name),
+      price = dplyr::coalesce(price_sub, price),
+      fantasy = dplyr::coalesce(fantasy_sub, fantasy)
+    ) |>
+    dplyr::select(player_name, position, price, fantasy)
+
+  last_off <- transfer |>
+    dplyr::select(position, player_name, price, fantasy) |>
+    dplyr::bind_rows(last_off)
+
+}
