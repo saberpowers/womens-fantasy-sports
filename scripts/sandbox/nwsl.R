@@ -1,6 +1,6 @@
 
 current_year <- 2026
-current_gameweek <- 10
+current_gameweek <- 12
 
 fit_marcel_projection_1 <- function(data, ...) {
   fit <- data |>
@@ -68,6 +68,8 @@ schedule <- jsonlite::fromJSON("https://app.americansocceranalysis.com/api/v1/nw
       date_time_pt < "2026-05-19" ~ 9,
       date_time_pt < "2026-05-27" ~ 10,
       date_time_pt < "2026-06-16" ~ 11,
+      date_time_pt < "2026-07-09" ~ 12,
+      date_time_pt < "2026-07-17" ~ 13,
     )
   )
 
@@ -84,7 +86,15 @@ game <- asa_client$get_games(leagues = "nwsl") |>
 
 team_xgoals <- asa_client$get_team_xgoals(leagues = "nwsl", split_by_games = TRUE)
 
-player_xgoals <- asa_client$get_player_xgoals(leagues = "nwsl", split_by_games = TRUE)
+player_xgoals <- NULL
+for (year in 2016:current_year) {
+  player_xgoals <- asa_client$get_player_xgoals(
+    leagues = "nwsl",
+    split_by_games = TRUE,
+    season_name = year
+  ) |>
+    dplyr::bind_rows(player_xgoals)
+}
 
 team_game <- game |>
   tidyr::pivot_longer(cols = c(home_team_id, away_team_id), values_to = "team_id") |>
@@ -793,6 +803,10 @@ while (TRUE) {
       player_name = dplyr::coalesce(player_name_sub, player_name),
       price = dplyr::coalesce(price_sub, price),
       fantasy = dplyr::coalesce(fantasy_sub, fantasy)
+    ) |>
+    dplyr::arrange(
+      factor(position, levels = c("Goalkeeper", "Defender", "Midfielder", "Forward")),
+      -fantasy
     ) |>
     dplyr::select(player_name, position, price, fantasy)
 
