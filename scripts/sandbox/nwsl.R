@@ -1,6 +1,6 @@
 
 current_year <- 2026
-current_gameweek <- 13
+current_gameweek <- 21
 
 fit_marcel_projection_1 <- function(data, ...) {
   fit <- data |>
@@ -76,6 +76,16 @@ schedule <- jsonlite::fromJSON("https://app.americansocceranalysis.com/api/v1/nw
       date_time_pt < "2026-08-04" ~ 16,
       date_time_pt < "2026-08-12" ~ 17,
       date_time_pt < "2026-08-20" ~ 18,
+      date_time_pt < "2026-08-25" ~ 19,
+      date_time_pt < "2026-09-02" ~ 20,
+      date_time_pt < "2026-09-09" ~ 21,
+      date_time_pt < "2026-09-15" ~ 22,
+      date_time_pt < "2026-09-23" ~ 23,
+      date_time_pt < "2026-09-30" ~ 24,
+      date_time_pt < "2026-10-10" ~ 25,
+      date_time_pt < "2026-10-21" ~ 26,
+      date_time_pt < "2026-10-29" ~ 27,
+      date_time_pt < "2026-11-02" ~ 28,
     )
   )
 
@@ -494,13 +504,17 @@ projection_wide <- projection |>
 player_minutes_ratio_last <- game_log |>
   dplyr::filter(metric == "minutes_per_game") |>
   dplyr::group_by(player_id, year) |>
-  dplyr::summarize(minutes_ratio_last = mean(minutes_ratio), .groups = "drop") |>
+  dplyr::summarize(
+    games_last = dplyr::n(),
+    minutes_ratio_last = mean(minutes_ratio),
+    .groups = "drop"
+  ) |>
   dplyr::mutate(year = year + 1)
 
 data_minutes <- game_log |>
   dplyr::filter(metric == "minutes_per_game") |>
   dplyr::left_join(player_minutes_ratio_last, by = c("player_id", "year")) |>
-  tidyr::replace_na(list(minutes_ratio_last = 0)) |>
+  tidyr::replace_na(list(games_last = 0, minutes_ratio_last = 0)) |>
   dplyr::arrange(year, matchday) |>
   dplyr::group_by(player_id) |>
   dplyr::mutate(
@@ -513,6 +527,8 @@ data_minutes <- game_log |>
   dplyr::ungroup() |>
   dplyr::group_by(player_id, year) |>
   dplyr::mutate(
+    games_std = 1:dplyr::n() - 1,
+    minutes_ratio_std = (cumsum(minutes_ratio) - minutes_ratio) / games_std,
     games_rest = dplyr::n():1,
     minutes_ratio_rest = (sum(minutes_ratio) - cumsum(minutes_ratio)) / games_rest
   ) |>
@@ -520,8 +536,8 @@ data_minutes <- game_log |>
 
 fit_minutes_next <- nls(
   formula = minutes_ratio ~ (
-    w_rookie * (minutes_ratio_last == 0) * minutes_ratio_rookie +
-    w_last * (minutes_ratio_last > 0) * minutes_ratio_last +
+    w_last * games_last * minutes_ratio_last +
+    w_std * games_std * minutes_ratio_std +
     w_recent * (
       minutes_ratio_1 +
       minutes_ratio_2 * d +
@@ -531,16 +547,19 @@ fit_minutes_next <- nls(
     ) +
     minutes_ratio_anchor
   ) / (
-    w_rookie * (minutes_ratio_last == 0) + w_last * (minutes_ratio_last > 0) + w_recent * (1 + d + d^2 + d^3 + d^4) + 1
+    w_last * games_last +
+    w_std * games_std +
+    w_recent * (1 + d + d^2 + d^3 + d^4) +
+    1
   ),
   data = data_minutes,
-  start = list(w_rookie = 1, w_last = 1, w_recent = 1, d = 1, minutes_ratio_rookie = 0, minutes_ratio_anchor = 0)
+  start = list(w_last = 1, w_std = 1, w_recent = 1, d = 1, minutes_ratio_anchor = 0)
 )
 
 fit_minutes_rest <- nls(
   formula = minutes_ratio_rest ~ (
-    w_rookie * (minutes_ratio_last == 0) * minutes_ratio_rookie +
-    w_last * (minutes_ratio_last > 0) * minutes_ratio_last +
+    w_last * games_last * minutes_ratio_last +
+    w_std * games_std * minutes_ratio_std +
     w_recent * (
       minutes_ratio_1 +
       minutes_ratio_2 * d +
@@ -550,10 +569,10 @@ fit_minutes_rest <- nls(
     ) +
     minutes_ratio_anchor
   ) / (
-    w_rookie * (minutes_ratio_last == 0) + w_last * (minutes_ratio_last > 0) + w_recent * (1 + d + d^2 + d^3 + d^4) + 1
+    w_last * games_last + w_std * games_std + w_recent * (1 + d + d^2 + d^3 + d^4) + 1
   ),
   data = data_minutes,
-  start = list(w_rookie = 1, w_last = 1, w_recent = 1, d = 1, minutes_ratio_rookie = 0, minutes_ratio_anchor = 0),
+  start = list(w_last = 1, w_std = 1, w_recent = 1, d = 1, minutes_ratio_anchor = 0),
   weights = games_rest
 )
 
@@ -661,11 +680,14 @@ fantasy_points <- projection_wide |>
     points_per_goal456 = ifelse(position %in% c("Goalkeeper", "Defender"), -2, 0),
     xgoals_per_game_rest = pred_minutes_rest * xgoals_per_minute,
     xassists_per_game_rest = pred_minutes_rest * xassists_per_minute,
-    # Exclude visionary points from rest-of-season projection. Visionary status too unpredictable.
+    prob_points_rest = (points_per_xgoal > 0) * (1 - ppois(lambda = xgoals_per_game_rest, q = 0)) +
+      (points_per_xassist > 0) * (1 - ppois(lambda = xassists_per_game_rest, q = 0)) +
+      (points_per_goal0 > 0) * goal0s_per_game * prob_60_minutes_rest,
     fantasy_per_game_rest = 1 * prob_1_minute_rest + 1 * prob_60_minutes_rest +
       points_per_xgoal * xgoals_per_game_rest + points_per_xassist * xassists_per_game_rest +
       points_per_goal0 * goal0s_per_game * prob_60_minutes_rest +
-      points_per_goal23 * goal23s_per_game + points_per_goal456 * goal456s_per_game
+      points_per_goal23 * goal23s_per_game + points_per_goal456 * goal456s_per_game +
+      prob_points_rest * dplyr::coalesce(is_visionary, 0) * 3
   )
 
 ranking <- fantasy_points |>
@@ -881,3 +903,16 @@ while(nrow(team_over) > 0) {
     dplyr::filter(n > 3) |>
     dplyr::select(team)
 }
+
+
+daily_projection
+
+daily_projection |>
+  dplyr::inner_join(best_roster, by = "player_name")
+
+daily_projection |>
+  dplyr::filter(my_team) |>
+  dplyr::anti_join(best_roster, by = "player_name")
+
+daily_projection |>
+  dplyr::filter(my_team)
